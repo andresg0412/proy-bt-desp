@@ -22,7 +22,7 @@ RUN apk add --no-cache --virtual .build-deps \
         dumb-init
 
 # Instalar dependencias (incluye devDependencies para build)
-RUN npm ci --include=dev
+RUN npm install
 
 # Copiar código fuente
 COPY src/ ./src/
@@ -59,7 +59,7 @@ RUN addgroup -g 1001 -S nodejs \
 COPY --from=builder --chown=nodejs:nodejs /app/package*.json ./
 
 # Instalar SOLO dependencias de producción
-RUN npm ci --only=production --ignore-scripts \
+RUN npm install --only=production --ignore-scripts \
     && npm cache clean --force
 
 # Copiar archivos compilados y assets
