@@ -6,13 +6,9 @@ WORKDIR /app
 
 # Configurar variables de entorno para build
 ENV NODE_ENV=production
-ENV PNPM_HOME=/usr/local/bin
-
-# Habilitar pnpm
-RUN corepack enable && corepack prepare pnpm@latest --activate
 
 # Copiar archivos de configuración primero para aprovechar cache de Docker
-COPY package*.json pnpm-lock.yaml ./
+COPY package*.json ./
 COPY tsconfig*.json rollup.config.js jest.config.js ./
 
 # Instalar dependencias de sistema necesarias para build
@@ -26,14 +22,14 @@ RUN apk add --no-cache --virtual .build-deps \
         dumb-init
 
 # Instalar dependencias (incluye devDependencies para build)
-RUN pnpm install --frozen-lockfile
+RUN npm ci --include=dev
 
 # Copiar código fuente
 COPY src/ ./src/
 COPY assets/ ./assets/
 
 # Compilar aplicación TypeScript
-RUN pnpm run build
+RUN npm run build
 
 # Limpiar dependencias de build
 RUN apk del .build-deps
@@ -47,27 +43,23 @@ WORKDIR /app
 
 # Variables de entorno para producción
 ENV NODE_ENV=production
-ENV PNPM_HOME=/usr/local/bin
 ENV PORT=3008
 
 # Instalar solo las herramientas necesarias para runtime
 RUN apk add --no-cache \
         curl \
         dumb-init \
-        tini \
-    && corepack enable \
-    && corepack prepare pnpm@latest --activate
+        tini
 
 # Crear usuario no-root con ID específico
 RUN addgroup -g 1001 -S nodejs \
     && adduser -S -u 1001 -G nodejs nodejs
 
 # Copiar archivos de dependencias desde builder
-COPY --from=builder --chown=nodejs:nodejs /app/package*.json /app/pnpm-lock.yaml ./
+COPY --from=builder --chown=nodejs:nodejs /app/package*.json ./
 
 # Instalar SOLO dependencias de producción
-RUN pnpm install --prod --frozen-lockfile --ignore-scripts \
-    && pnpm store prune \
+RUN npm ci --only=production --ignore-scripts \
     && npm cache clean --force
 
 # Copiar archivos compilados y assets
