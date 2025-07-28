@@ -1,0 +1,68 @@
+version: '3.8'
+
+services:
+  # Bot Meta WhatsApp
+  bot-meta:
+    build: 
+      context: ./bot-meta
+      dockerfile: Dockerfile
+      args:
+        - PORT=3008
+    restart: unless-stopped
+    environment:
+      - PORT=${BOT_PORT}
+      - NODE_ENV=${NODE_ENV}
+      - jwtToken=${JWT_TOKEN}
+      - numberId=${NUMBER_ID}
+      - verifyToken=${VERIFY_TOKEN}
+      - URL_SHEETBEST=${URL_SHEETBEST}
+      - API_KEY_SHEETBEST=${API_KEY_SHEETBEST}
+      - API_BACKEND_URL=${API_BACKEND_URL}
+    # No exponemos puerto directamente, solo a través de Nginx
+    expose:
+      - "${BOT_PORT}"
+    volumes:
+      - ./bot-meta/assets:/app/assets:ro
+      - /etc/timezone:/etc/timezone:ro
+      - /etc/localtime:/etc/localtime:ro
+    networks:
+      - shared_network
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:${BOT_PORT}/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # Nginx como proxy reverso para webhooks de Meta
+  nginx:
+    image: nginx:alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"  # Para SSL si lo configuras
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro  # Para certificados SSL
+      - /var/log/nginx:/var/log/nginx
+    networks:
+      - shared_network
+      - internal
+    depends_on:
+      bot-meta:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  shared_network:
+    external: true
+    name: ${EXTERNAL_NETWORK_NAME}
+  internal:
+    driver: bridge
+    internal: false

@@ -1,0 +1,126 @@
+version: '3.8'
+
+services:
+  bot-meta:
+    build:
+      context: ./bot-meta
+      dockerfile: Dockerfile
+      target: production
+    container_name: bot-meta-prod
+    restart: unless-stopped
+    
+    environment:
+      - NODE_ENV=production
+      - PORT=3008
+    
+    env_file:
+      - ./bot-meta/.env.production
+    
+    ports:
+      - "3008:3008"
+    
+    volumes:
+      # Logs persistentes
+      - bot-logs:/app/logs
+      # Assets estáticos (solo lectura)
+      - ./bot-meta/assets:/app/assets:ro
+    
+    networks:
+      - bot-network
+      - shared_network  # Para comunicación con proyecto-ips
+    
+    # Configuración de recursos
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "node", "/app/healthcheck.js"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    
+    # Configuración de logging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    
+    # Configuración de seguridad
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=100m
+      - /app/logs:noexec,nosuid,size=50m
+    
+    # Labels para monitoreo
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.bot-meta.rule=Host(`yourdomain.com`)"
+      - "traefik.http.routers.bot-meta.entrypoints=websecure"
+      - "traefik.http.routers.bot-meta.tls.certresolver=letsencrypt"
+      - "com.docker.compose.project=bot-meta-production"
+
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: bot-meta-nginx
+    restart: unless-stopped
+    
+    ports:
+      - "80:80"
+      - "443:443"
+    
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d/:/etc/nginx/conf.d/:ro
+      - ./ssl/:/etc/ssl/certs/:ro
+      - nginx-logs:/var/log/nginx
+    
+    networks:
+      - bot-network
+    
+    depends_on:
+      bot-meta:
+        condition: service_healthy
+    
+    # Health check para nginx
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    
+    # Configuración de logging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+    
+    # Configuración de seguridad
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  bot-network:
+    driver: bridge
+    internal: false
+  
+  # Red compartida con proyecto-ips
+  shared_network:
+    external: true
+
+volumes:
+  bot-logs:
+    driver: local
+  nginx-logs:
+    driver: local
