@@ -1,71 +1,98 @@
-# Multi-stage build para optimizar tamaño de imagen final
-# Imagen base ~400MB
+# Multi-stage build optimizado para producción
+# Imagen base ~400MB final
 FROM node:21-alpine3.18 as builder
 
 WORKDIR /app
 
-# Habilitar pnpm
-RUN corepack enable && corepack prepare pnpm@latest --activate
+# Configurar variables de entorno para build
+ENV NODE_ENV=production
 ENV PNPM_HOME=/usr/local/bin
 
-# Copiar archivos de configuración primero (cache layers)
-COPY package*.json pnpm-lock.yaml ./
-COPY tsconfig*.json rollup.config.js ./
+# Habilitar pnpm
+RUN corepack enable && corepack prepare pnpm@latest --activate
 
-# Instalar dependencias de compilación y runtime
-RUN apk add --no-cache --virtual .gyp \
+# Copiar archivos de configuración primero para aprovechar cache de Docker
+COPY package*.json pnpm-lock.yaml ./
+COPY tsconfig*.json rollup.config.js jest.config.js ./
+
+# Instalar dependencias de sistema necesarias para build
+RUN apk add --no-cache --virtual .build-deps \
         python3 \
         make \
         g++ \
-    && apk add --no-cache git curl
+        git \
+    && apk add --no-cache \
+        curl \
+        dumb-init
 
-# Instalar dependencias
-RUN pnpm install
+# Instalar dependencias (incluye devDependencies para build)
+RUN pnpm install --frozen-lockfile
 
 # Copiar código fuente
 COPY src/ ./src/
 COPY assets/ ./assets/
 
-# Compilar aplicación
-RUN pnpm run build && apk del .gyp
+# Compilar aplicación TypeScript
+RUN pnpm run build
 
-# Etapa de producción
-FROM node:21-alpine3.18 as deploy
+# Limpiar dependencias de build
+RUN apk del .build-deps
+
+# ===============================================
+# Etapa de producción optimizada
+# ===============================================
+FROM node:21-alpine3.18 as production
 
 WORKDIR /app
 
-# Argumento para puerto
-ARG PORT=3008
-ENV PORT=$PORT
-
-# Instalar curl para health checks
-RUN apk add --no-cache curl
-
-# Habilitar pnpm en etapa de producción
-RUN corepack enable && corepack prepare pnpm@latest --activate 
+# Variables de entorno para producción
+ENV NODE_ENV=production
 ENV PNPM_HOME=/usr/local/bin
+ENV PORT=3008
 
-# Copiar archivos compilados desde builder
-COPY --from=builder /app/assets ./assets
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/package*.json /app/pnpm-lock.yaml ./
+# Instalar solo las herramientas necesarias para runtime
+RUN apk add --no-cache \
+        curl \
+        dumb-init \
+        tini \
+    && corepack enable \
+    && corepack prepare pnpm@latest --activate
 
-# Instalar solo dependencias de producción
-RUN npm cache clean --force && pnpm install --production --ignore-scripts
+# Crear usuario no-root con ID específico
+RUN addgroup -g 1001 -S nodejs \
+    && adduser -S -u 1001 -G nodejs nodejs
 
-# Crear usuario no-root para seguridad
-RUN addgroup -g 1001 -S nodejs && adduser -S -u 1001 nodejs
+# Copiar archivos de dependencias desde builder
+COPY --from=builder --chown=nodejs:nodejs /app/package*.json /app/pnpm-lock.yaml ./
 
-# Cambiar permisos
-RUN chown -R nodejs:nodejs /app
+# Instalar SOLO dependencias de producción
+RUN pnpm install --prod --frozen-lockfile --ignore-scripts \
+    && pnpm store prune \
+    && npm cache clean --force
+
+# Copiar archivos compilados y assets
+COPY --from=builder --chown=nodejs:nodejs /app/dist ./dist
+COPY --from=builder --chown=nodejs:nodejs /app/assets ./assets
+
+# Copiar health check script
+COPY --chown=nodejs:nodejs healthcheck.js ./
+
+# Crear directorios necesarios con permisos correctos
+RUN mkdir -p /app/logs /app/tmp \
+    && chown -R nodejs:nodejs /app
+
+# Cambiar a usuario no-root
 USER nodejs
 
 # Exponer puerto
 EXPOSE $PORT
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-  CMD curl -f http://localhost:$PORT/health || exit 1
+# Health check optimizado
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD node /app/healthcheck.js || exit 1
+
+# Usar tini como init system para manejo correcto de señales
+ENTRYPOINT ["/sbin/tini", "--"]
 
 # Comando por defecto
-CMD ["npm", "start"]
+CMD ["node", "./dist/app.js"]
